@@ -1,78 +1,108 @@
 # antigravity-bridge-mcp
 
-Allows agents (opencode, Claude Code, or any MCP-compatible agent) to communicate bidirectionally with the **Antigravity IDE CLI** agent.
+Allows peer agents (**opencode**, **Claude Code**, or any MCP-compatible client) to communicate bidirectionally with the **Antigravity IDE CLI** agent.
+
+## Features
+
+- **Bi-directional wakeups**:
+  - Peer agent -> Antigravity: alerts Antigravity via reactive stream log and optional Telegram notification.
+  - Antigravity -> Peer agent: alerts opencode via `oc_send.js --no-reply` (inter-turn queuing) or Claude Code via tmux session injection.
+- **Configurable target**:
+  - `auto`: Automatically routes by message recipient or detects whether Claude Code (tmux) or opencode is active.
+  - `opencode`: Routes all peer wakeups to opencode.
+  - `claude`: Routes all peer wakeups to Claude Code.
+  - `both`: Broadcasts to both opencode and Claude Code simultaneously.
+
+---
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `server.py` | MCP server (stdio JSON-RPC 2.0). Drop this into your agent's MCP config. |
-| `bridge_monitor.py` | Background daemon. Watches `~/.claude/inbox/messages.jsonl` and wakes the right agent on new messages. |
-| `antigravity-bridge.service` | systemd `--user` unit for running `bridge_monitor.py` as an always-on daemon. |
+| `server.py` | MCP stdio JSON-RPC server providing bridge tools to agents. |
+| `bridge_monitor.py` | Daemon that watches `~/.claude/inbox/messages.jsonl` and executes wakeups. |
+| `config.json` | Configuration file template for target agent and paths. |
+| `antigravity-bridge.service` | systemd `--user` service unit. |
 
-## MCP Tools
+---
 
-| Tool | Description |
-|------|-------------|
-| `send_message_to_antigravity` | Send a message to Antigravity. |
-| `check_inbox_from_antigravity` | Check for replies from Antigravity. |
-| `reply_to_antigravity` | Thread a reply to a specific message ID. |
-| `get_conversation_history` | Get recent message history. |
+## Configuration (`config.json`)
 
-## Setup
-
-### 1. Add to opencode
-
-In `~/.config/opencode/opencode.json`:
+Stored at `~/.config/antigravity-bridge/config.json`:
 
 ```json
-"mcp": {
-    "antigravity-bridge": {
-        "type": "local",
-        "command": ["python3", "/path/to/server.py"],
-        "enabled": true
-    }
+{
+  "target_agent": "auto",
+  "claude": {
+    "enabled": true,
+    "tmux_session": "claude",
+    "inbox_file": "~/Roni_workspace/audits_plans/claude_main_inbox.json"
+  },
+  "opencode": {
+    "enabled": true,
+    "bun_bin": "~/.local/bin/bun",
+    "oc_send_js": "~/.local/lib/ocbridge/oc_send.js"
+  },
+  "telegram": {
+    "enabled": true,
+    "send_script": "~/Roni_workspace/oculus/scripts/telegram-monitor/bin/send-telegram.sh",
+    "env_file": "~/.config/oculus/orchestrator.env"
+  }
 }
 ```
 
-### 2. Run the wake daemon
+### Overrides
+
+- **Environment Variable**: `export BRIDGE_TARGET_AGENT=opencode` (or `claude`, `both`, `auto`)
+- **CLI Flag**: `python3 bridge_monitor.py --target [auto|opencode|claude|both]`
+
+---
+
+## MCP Tools
+
+### For Peer Agents (opencode / Claude Code):
+- `send_message_to_antigravity`: Send task requests or questions to Antigravity.
+- `check_inbox_from_antigravity`: Read responses or directives from Antigravity.
+- `reply_to_antigravity`: Threaded reply to a specific Antigravity message.
+- `get_conversation_history`: Retrieve chronological message history.
+
+### For Antigravity:
+- `send_message_to_peer`: Generic message to configured peer agent.
+- `send_message_to_opencode`: Specifically target opencode.
+- `send_message_to_claude`: Specifically target Claude Code.
+- `check_inbox_from_claude` / `check_inbox_from_opencode`: Retrieve incoming messages.
+- `reply_to_claude` / `reply_to_opencode`: Send threaded replies.
+
+---
+
+## Deployment & Setup
 
 ```bash
+# 1. Clone or copy files
+mkdir -p ~/.config/antigravity-bridge
+cp config.json ~/.config/antigravity-bridge/config.json
 cp bridge_monitor.py ~/.config/antigravity-bridge/bridge_monitor.py
 cp antigravity-bridge.service ~/.config/systemd/user/antigravity-bridge.service
+
+# 2. Reload and enable systemd user daemon
 systemctl --user daemon-reload
 systemctl --user enable --now antigravity-bridge.service
 ```
 
-## Wake-up flow
-
-```
-opencode agent
-    │  calls send_message_to_antigravity(...)
-    ▼
-~/.claude/inbox/messages.jsonl  ◄── bridge_monitor.py (polls every 2 s)
-    │                                       │
-    │  to="antigravity"                     │  to="opencode"
-    ▼                                       ▼
-antigravity_watcher.py               oc_send.js --no-reply
-(reactive stdout alert)          (queues wake in opencode session)
-    │                                       │
-    ▼                                       ▼
-Antigravity IDE wakes up           opencode agent wakes up
-```
-
-## Inbox format
-
-Messages are newline-delimited JSON in `~/.claude/inbox/messages.jsonl`:
+### Add to opencode config (`~/.config/opencode/opencode.json`):
 
 ```json
-{
-    "id": "msg_1726662000_a1b2c3d4",
-    "timestamp": "2026-09-18T16:00:00Z",
-    "from": "opencode",
-    "to": "antigravity",
-    "subject": "Code review request",
-    "content": "Can you review this architecture?",
-    "status": "unread"
+"mcp": {
+  "antigravity-bridge": {
+    "type": "local",
+    "command": ["python3", "/path/to/server.py"],
+    "enabled": true
+  }
 }
+```
+
+### Add to Claude Code (`claude mcp add`):
+
+```bash
+claude mcp add antigravity-bridge python3 /path/to/server.py
 ```

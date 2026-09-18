@@ -1,23 +1,13 @@
 #!/usr/bin/env python3
 """
 Antigravity Bridge MCP Server.
-Provides a Model Context Protocol (MCP) interface over stdio allowing opencode
-(and other agents) to send messages to Antigravity, check its inbox for replies,
-view conversation threads, and conduct two-way messaging.
+Provides a Model Context Protocol (MCP) interface over stdio allowing opencode,
+Claude Code, or Antigravity to send messages, check inboxes, and reply bidirectionally.
 
 Zero external dependencies — standard library Python only.
 
 Usage (stdio MCP):
     python3 server.py
-
-In opencode.json:
-    "mcp": {
-        "antigravity-bridge": {
-            "type": "local",
-            "command": ["python3", "/path/to/server.py"],
-            "enabled": true
-        }
-    }
 """
 
 import sys
@@ -28,19 +18,35 @@ import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+CONFIG_FILE = Path.home() / ".config" / "antigravity-bridge" / "config.json"
 INBOX_DIR = Path.home() / ".claude" / "inbox"
 INBOX_FILE = INBOX_DIR / "messages.jsonl"
 
 
+def get_default_from_agent() -> str:
+    if os.environ.get("BRIDGE_AGENT_NAME"):
+        return os.environ["BRIDGE_AGENT_NAME"]
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                c = json.load(f)
+                target = c.get("target_agent", "").lower()
+                if target in ("opencode", "openbot"):
+                    return "opencode"
+                if target in ("claude", "claude_code"):
+                    return "claude_code"
+        except Exception:
+            pass
+    return "opencode"
+
+
 def ensure_inbox():
-    """Ensure inbox directory and storage file exist."""
     INBOX_DIR.mkdir(parents=True, exist_ok=True)
     if not INBOX_FILE.exists():
         INBOX_FILE.touch()
 
 
 def read_all_messages() -> List[Dict[str, Any]]:
-    """Read all messages from the inbox storage."""
     ensure_inbox()
     messages = []
     try:
@@ -58,7 +64,6 @@ def read_all_messages() -> List[Dict[str, Any]]:
 
 
 def write_all_messages(messages: List[Dict[str, Any]]) -> None:
-    """Overwrite messages file atomically."""
     ensure_inbox()
     temp_file = INBOX_FILE.with_name(f"{INBOX_FILE.name}.tmp")
     with open(temp_file, "w", encoding="utf-8") as f:
@@ -68,18 +73,21 @@ def write_all_messages(messages: List[Dict[str, Any]]) -> None:
 
 
 def append_message(msg: Dict[str, Any]) -> None:
-    """Append a single message to inbox storage."""
     ensure_inbox()
     with open(INBOX_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
 
-def send_message_to_antigravity(content: str, subject: str = "Message", from_agent: str = "opencode") -> Dict[str, Any]:
-    """Send a message to Antigravity."""
+# ---------------------------------------------------------------------------
+# Peer -> Antigravity actions
+# ---------------------------------------------------------------------------
+
+def send_message_to_antigravity(content: str, subject: str = "Message", from_agent: Optional[str] = None) -> Dict[str, Any]:
+    sender = from_agent or get_default_from_agent()
     msg = {
         "id": f"msg_{int(time.time())}_{uuid.uuid4().hex[:8]}",
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "from": from_agent,
+        "from": sender,
         "to": "antigravity",
         "subject": subject,
         "content": content,
@@ -90,14 +98,13 @@ def send_message_to_antigravity(content: str, subject: str = "Message", from_age
 
 
 def check_inbox_from_antigravity(mark_read: bool = True) -> List[Dict[str, Any]]:
-    """Check inbox for messages from Antigravity."""
     messages = read_all_messages()
-    incoming = [m for m in messages if m.get("to") in ("opencode", "claude_code") and m.get("from") == "antigravity"]
+    incoming = [m for m in messages if m.get("to") in ("opencode", "claude_code", "peer") and m.get("from") == "antigravity"]
 
     if mark_read:
         updated = False
         for m in messages:
-            if m.get("to") in ("opencode", "claude_code") and m.get("from") == "antigravity" and m.get("status") == "unread":
+            if m.get("to") in ("opencode", "claude_code", "peer") and m.get("from") == "antigravity" and m.get("status") == "unread":
                 m["status"] = "read"
                 updated = True
         if updated:
@@ -106,20 +113,8 @@ def check_inbox_from_antigravity(mark_read: bool = True) -> List[Dict[str, Any]]
     return incoming
 
 
-def get_conversation_history(limit: int = 50) -> List[Dict[str, Any]]:
-    """Get recent conversation history between this agent and Antigravity."""
-    messages = read_all_messages()
-    bridge_msgs = [
-        m for m in messages
-        if m.get("to") in ("antigravity", "opencode", "claude_code")
-        or m.get("from") in ("antigravity", "opencode", "claude_code")
-    ]
-    bridge_msgs.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
-    return bridge_msgs[:limit]
-
-
-def reply_to_antigravity(reply_to_id: str, content: str, from_agent: str = "opencode") -> Dict[str, Any]:
-    """Reply to a specific message from Antigravity."""
+def reply_to_antigravity(reply_to_id: str, content: str, from_agent: Optional[str] = None) -> Dict[str, Any]:
+    sender = from_agent or get_default_from_agent()
     messages = read_all_messages()
     original = next((m for m in messages if m.get("id") == reply_to_id), None)
     subject = f"Re: {original.get('subject', 'Message')}" if original else "Reply"
@@ -127,7 +122,7 @@ def reply_to_antigravity(reply_to_id: str, content: str, from_agent: str = "open
     msg = {
         "id": f"msg_{int(time.time())}_{uuid.uuid4().hex[:8]}",
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "from": from_agent,
+        "from": sender,
         "to": "antigravity",
         "subject": subject,
         "content": content,
@@ -139,63 +134,192 @@ def reply_to_antigravity(reply_to_id: str, content: str, from_agent: str = "open
 
 
 # ---------------------------------------------------------------------------
-# MCP JSON-RPC 2.0 server (stdio transport)
+# Antigravity -> Peer actions (opencode / claude_code / peer)
+# ---------------------------------------------------------------------------
+
+def send_message_to_peer(content: str, subject: str = "Message", recipient: str = "auto") -> Dict[str, Any]:
+    target = recipient
+    if target == "auto":
+        target = "opencode"
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    c = json.load(f)
+                    t = c.get("target_agent", "auto").lower()
+                    if t in ("claude", "claude_code"):
+                        target = "claude_code"
+                    elif t in ("opencode", "openbot"):
+                        target = "opencode"
+                    elif t == "both":
+                        target = "peer"
+            except Exception:
+                pass
+
+    msg = {
+        "id": f"msg_{int(time.time())}_{uuid.uuid4().hex[:8]}",
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "from": "antigravity",
+        "to": target,
+        "subject": subject,
+        "content": content,
+        "status": "unread",
+    }
+    append_message(msg)
+    return {"success": True, "message_id": msg["id"], "target": target}
+
+
+def get_conversation_history(limit: int = 50) -> List[Dict[str, Any]]:
+    messages = read_all_messages()
+    messages.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
+    return messages[:limit]
+
+
+# ---------------------------------------------------------------------------
+# MCP Definitions
 # ---------------------------------------------------------------------------
 
 TOOLS = [
     {
         "name": "send_message_to_antigravity",
-        "description": "Send a message to the Antigravity IDE agent. Use this to request deep reasoning, code review, architecture advice, or to delegate tasks.",
+        "description": "Send a message to the Antigravity IDE agent (for deep reasoning, architectural review, or paired coding).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "The message body to send."},
-                "subject": {"type": "string", "description": "Short subject line for the message.", "default": "Message"},
-                "from_agent": {"type": "string", "description": "Sender identity label.", "default": "opencode"},
+                "content": {"type": "string", "description": "Message content."},
+                "subject": {"type": "string", "description": "Subject line.", "default": "Message"},
+                "from_agent": {"type": "string", "description": "Sender identity ('opencode' or 'claude_code')."},
             },
             "required": ["content"],
         },
     },
     {
         "name": "check_inbox_from_antigravity",
-        "description": "Check for new messages from Antigravity. Call this after receiving a bridge alert.",
+        "description": "Check for messages received from Antigravity.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "mark_read": {"type": "boolean", "description": "Mark retrieved messages as read.", "default": True},
-            },
-        },
-    },
-    {
-        "name": "get_conversation_history",
-        "description": "Retrieve recent message history between this agent and Antigravity.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "description": "Max number of messages to return.", "default": 50},
+                "mark_read": {"type": "boolean", "description": "Mark unread messages as read.", "default": True},
             },
         },
     },
     {
         "name": "reply_to_antigravity",
-        "description": "Send a reply to a specific Antigravity message, threading it by message ID.",
+        "description": "Send a reply to a specific message from Antigravity.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "reply_to_id": {"type": "string", "description": "The ID of the message to reply to."},
-                "content": {"type": "string", "description": "Reply body."},
-                "from_agent": {"type": "string", "description": "Sender identity label.", "default": "opencode"},
+                "reply_to_id": {"type": "string", "description": "ID of the message being replied to."},
+                "content": {"type": "string", "description": "Reply content."},
+                "from_agent": {"type": "string", "description": "Sender identity ('opencode' or 'claude_code')."},
             },
             "required": ["reply_to_id", "content"],
+        },
+    },
+    {
+        "name": "send_message_to_peer",
+        "description": "Send a message to the peer agent (opencode, Claude Code, or both based on configuration).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "Message content."},
+                "subject": {"type": "string", "description": "Subject line.", "default": "Message"},
+                "recipient": {"type": "string", "description": "Recipient: 'auto', 'opencode', 'claude_code', or 'peer'.", "default": "auto"},
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "send_message_to_opencode",
+        "description": "Send a message from Antigravity specifically to the opencode agent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Message text."},
+                "subject": {"type": "string", "description": "Subject line.", "default": "General"},
+            },
+            "required": ["message"],
+        },
+    },
+    {
+        "name": "send_message_to_claude",
+        "description": "Send a message from Antigravity specifically to Claude Code.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Message text."},
+                "subject": {"type": "string", "description": "Subject line.", "default": "General"},
+            },
+            "required": ["message"],
+        },
+    },
+    {
+        "name": "check_inbox_from_claude",
+        "description": "Check for messages received from Claude Code / peer agent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mark_read": {"type": "boolean", "description": "Mark unread messages as read.", "default": True},
+            },
+        },
+    },
+    {
+        "name": "check_inbox_from_opencode",
+        "description": "Check for messages received from opencode.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mark_read": {"type": "boolean", "description": "Mark unread messages as read.", "default": True},
+            },
+        },
+    },
+    {
+        "name": "reply_to_claude",
+        "description": "Reply to a message from Claude Code.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "Message ID."},
+                "reply": {"type": "string", "description": "Reply body."},
+            },
+            "required": ["message_id", "reply"],
+        },
+    },
+    {
+        "name": "reply_to_opencode",
+        "description": "Reply to a message from opencode.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "Message ID."},
+                "reply": {"type": "string", "description": "Reply body."},
+            },
+            "required": ["message_id", "reply"],
+        },
+    },
+    {
+        "name": "get_conversation_history",
+        "description": "Get chronological conversation history across the bridge.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Maximum number of messages to return.", "default": 50},
+            },
         },
     },
 ]
 
 TOOL_HANDLERS = {
-    "send_message_to_antigravity": lambda args: send_message_to_antigravity(**args),
-    "check_inbox_from_antigravity": lambda args: check_inbox_from_antigravity(**args),
-    "get_conversation_history": lambda args: get_conversation_history(**args),
-    "reply_to_antigravity": lambda args: reply_to_antigravity(**args),
+    "send_message_to_antigravity": lambda a: send_message_to_antigravity(**a),
+    "check_inbox_from_antigravity": lambda a: check_inbox_from_antigravity(**a),
+    "reply_to_antigravity": lambda a: reply_to_antigravity(**a),
+    "send_message_to_peer": lambda a: send_message_to_peer(**a),
+    "send_message_to_opencode": lambda a: send_message_to_peer(content=a.get("message", ""), subject=a.get("subject", "General"), recipient="opencode"),
+    "send_message_to_claude": lambda a: send_message_to_peer(content=a.get("message", ""), subject=a.get("subject", "General"), recipient="claude_code"),
+    "check_inbox_from_claude": lambda a: check_inbox_from_antigravity(**a),
+    "check_inbox_from_opencode": lambda a: check_inbox_from_antigravity(**a),
+    "reply_to_claude": lambda a: send_message_to_peer(content=a.get("reply", ""), subject="Re: Message", recipient="claude_code"),
+    "reply_to_opencode": lambda a: send_message_to_peer(content=a.get("reply", ""), subject="Re: Message", recipient="opencode"),
+    "get_conversation_history": lambda a: get_conversation_history(**a),
 }
 
 
@@ -217,7 +341,7 @@ def handle_request(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "antigravity-bridge", "version": "1.0.0"},
+                "serverInfo": {"name": "antigravity-bridge", "version": "1.1.0"},
             },
         }
 

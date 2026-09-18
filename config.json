@@ -1,0 +1,18 @@
+{
+  "target_agent": "auto",
+  "claude": {
+    "enabled": true,
+    "tmux_session": "claude",
+    "inbox_file": "/home/roni/Roni_workspace/audits_plans/claude_main_inbox.json"
+  },
+  "opencode": {
+    "enabled": true,
+    "bun_bin": "~/.local/bin/bun",
+    "oc_send_js": "~/.local/lib/ocbridge/oc_send.js"
+  },
+  "telegram": {
+    "enabled": true,
+    "send_script": "/home/roni/Roni_workspace/oculus/scripts/telegram-monitor/bin/send-telegram.sh",
+    "env_file": "~/.config/oculus/orchestrator.env"
+  }
+}
