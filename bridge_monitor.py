@@ -285,14 +285,55 @@ def wake_peer(msg: Dict[str, Any], cfg: Dict[str, Any]) -> None:
     if not (claude_up or opencode_up):
         log(f"wake_peer: no active peer detected for msg '{msg.get('subject')}'")
 
+def get_active_antigravity_conversations() -> List[str]:
+    """Detect active conversation IDs from open SQLite database descriptors of running agy processes."""
+    import glob
+    conv_ids = set()
+    for p in glob.glob("/proc/*/fd/*"):
+        try:
+            target = os.readlink(p)
+            if "conversations/" in target and target.endswith(".db-wal"):
+                cid = target.split("conversations/")[1].replace(".db-wal", "")
+                if len(cid) == 36 and cid.count("-") == 4:
+                    conv_ids.add(cid)
+        except Exception:
+            pass
+    return sorted(list(conv_ids))
+
 
 def wake_antigravity(msg: Dict[str, Any], cfg: Dict[str, Any]) -> None:
-    """Wake Antigravity CLI via stream log and Telegram alert."""
+    """Wake Antigravity CLI via direct agentapi send-message, stream log, and Telegram alert."""
     subject = msg.get("subject", "Peer Notification")
     content = msg.get("content", "")
-    sender = msg.get("from", "peer")
+    sender = msg.get("from", "opencode")
     msg_id = msg.get("id", "")
 
+    # 1. Native AgentAPI Wake (Triggers high-priority SYSTEM_MESSAGE wakeup inside Antigravity)
+    agy_bin = Path.home() / ".local" / "bin" / "agy"
+    if agy_bin.exists():
+        active_conversations = get_active_antigravity_conversations()
+        wake_payload = (
+            f"📬 [PEER MESSAGE FROM {sender.upper()}]\n"
+            f"Subject: {subject}\n"
+            f"ID: {msg_id}\n\n"
+            f"{content}"
+        )
+        for cid in active_conversations:
+            try:
+                res = subprocess.run(
+                    [str(agy_bin), "agentapi", "send-message", "--title", f"Bridge: {subject}", cid, wake_payload],
+                    capture_output=True,
+                    timeout=5,
+                )
+                if res.returncode == 0:
+                    log(f"wake_antigravity: successfully injected native wake into conversation {cid} via agy agentapi")
+                else:
+                    err = res.stderr.decode(errors="replace").strip()
+                    log(f"WARN wake_antigravity: agy agentapi returned {res.returncode} for {cid}: {err}")
+            except Exception as e:
+                log(f"ERROR wake_antigravity: agy agentapi failed for {cid}: {e}")
+
+    # 2. Reactive stream log
     stream_file = Path("/tmp/antigravity_bridge_stream.log")
     stream_entry = (
         f"\n📬 [ANTIGRAVITY BRIDGE ALERT] New incoming message from {sender}:\n"
@@ -308,8 +349,9 @@ def wake_antigravity(msg: Dict[str, Any], cfg: Dict[str, Any]) -> None:
     except Exception:
         pass
 
+    # 3. Telegram alert
     send_telegram_alert(f"📬 {sender} -> Antigravity: [{subject}] {content[:100]}", cfg)
-    log(f"wake_antigravity: alerted for msg '{subject}' ({msg_id}) from {sender}")
+    log(f"wake_antigravity: completed alert pipeline for msg '{subject}' ({msg_id}) from {sender}")
 
 
 # ---------------------------------------------------------------------------
