@@ -217,14 +217,14 @@ def wake_opencode(msg: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
 
     try:
         result = subprocess.run(
-            [str(bun_bin), str(oc_send_js), wake_text, "--no-reply"],
+            [str(bun_bin), str(oc_send_js), wake_text, "--async"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             timeout=30,
             stdin=subprocess.DEVNULL,
         )
         if result.returncode == 0:
-            log(f"wake_opencode: queued wake for msg '{subject}' ({msg_id}) from {sender}")
+            log(f"wake_opencode: triggered async wake for msg '{subject}' ({msg_id}) from {sender}")
             return True
         else:
             err = result.stderr.decode(errors="replace").strip()

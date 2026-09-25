@@ -97,10 +97,9 @@ def send_message_to_antigravity(content: str, subject: str = "Message", from_age
     return {"success": True, "message_id": msg["id"], "timestamp": msg["timestamp"]}
 
 
-def check_inbox_from_antigravity(mark_read: bool = True) -> List[Dict[str, Any]]:
+def check_inbox_for_peer(mark_read: bool = True) -> List[Dict[str, Any]]:
     messages = read_all_messages()
     incoming = [m for m in messages if m.get("to") in ("opencode", "claude_code", "peer") and m.get("from") == "antigravity"]
-
     if mark_read:
         updated = False
         for m in messages:
@@ -109,8 +108,25 @@ def check_inbox_from_antigravity(mark_read: bool = True) -> List[Dict[str, Any]]
                 updated = True
         if updated:
             write_all_messages(messages)
-
     return incoming
+
+
+def check_inbox_for_antigravity(mark_read: bool = True) -> List[Dict[str, Any]]:
+    messages = read_all_messages()
+    incoming = [m for m in messages if m.get("to") == "antigravity"]
+    if mark_read:
+        updated = False
+        for m in messages:
+            if m.get("to") == "antigravity" and m.get("status") == "unread":
+                m["status"] = "read"
+                updated = True
+        if updated:
+            write_all_messages(messages)
+    return incoming
+
+
+def check_inbox_from_antigravity(mark_read: bool = True) -> List[Dict[str, Any]]:
+    return check_inbox_for_peer(mark_read=mark_read)
 
 
 def reply_to_antigravity(reply_to_id: str, content: str, from_agent: Optional[str] = None) -> Dict[str, Any]:
@@ -315,8 +331,8 @@ TOOL_HANDLERS = {
     "send_message_to_peer": lambda a: send_message_to_peer(**a),
     "send_message_to_opencode": lambda a: send_message_to_peer(content=a.get("message", ""), subject=a.get("subject", "General"), recipient="opencode"),
     "send_message_to_claude": lambda a: send_message_to_peer(content=a.get("message", ""), subject=a.get("subject", "General"), recipient="claude_code"),
-    "check_inbox_from_claude": lambda a: check_inbox_from_antigravity(**a),
-    "check_inbox_from_opencode": lambda a: check_inbox_from_antigravity(**a),
+    "check_inbox_from_claude": lambda a: check_inbox_for_antigravity(mark_read=a.get("mark_read", True) if "mark_read" in a else (not a.get("unread_only", True))),
+    "check_inbox_from_opencode": lambda a: check_inbox_for_antigravity(mark_read=a.get("mark_read", True) if "mark_read" in a else (not a.get("unread_only", True))),
     "reply_to_claude": lambda a: send_message_to_peer(content=a.get("reply", ""), subject="Re: Message", recipient="claude_code"),
     "reply_to_opencode": lambda a: send_message_to_peer(content=a.get("reply", ""), subject="Re: Message", recipient="opencode"),
     "get_conversation_history": lambda a: get_conversation_history(**a),
