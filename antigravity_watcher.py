@@ -58,13 +58,13 @@ def main():
                         seen_ids.add(msg_id)
                         save_seen(seen_ids)
                         subject = msg.get("subject", "No Subject")
-                        sender = msg.get("from", "claude_code")
+                        sender = msg.get("from", "opencode")
                         content = msg.get("content", "")
                         ts = msg.get("timestamp", "")
                         
                         alert = (
                             f"\n==================================================\n"
-                            f"📬 [INCOMING CLAUDE CODE BRIDGE MESSAGE]\n"
+                            f"📬 [INCOMING PEER BRIDGE MESSAGE: {sender.upper()}]\n"
                             f"Timestamp: {ts}\n"
                             f"From: {sender}\n"
                             f"ID: {msg_id}\n"
