@@ -74,11 +74,15 @@ def main():
                             f"==================================================\n"
                         )
                         print(alert, flush=True)
+                        # Exit with code 0 to immediately trigger Antigravity task completion wake
+                        sys.exit(0)
+        except SystemExit:
+            raise
         except Exception as e:
-            # Avoid crashing loop
             time.sleep(1)
 
         time.sleep(2)
 
 if __name__ == "__main__":
     main()
+
